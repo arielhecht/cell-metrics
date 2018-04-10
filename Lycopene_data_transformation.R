@@ -21,7 +21,7 @@ source("Main_effects_calculator.R")
 
 OD_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 1, col_names = T)
 lycopene_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 2, col_names = T) 
-key<-read_excel("Supplementary Data File S4.xlsx",sheet = 4, col_names = T)  
+key<-read_excel("Supplementary Data File S4.xlsx",sheet = 4, col_names = T, na="NA")  
 
 
 #=====================
