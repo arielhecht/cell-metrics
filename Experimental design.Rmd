@@ -1,0 +1,154 @@
+---
+title: "Cell metrics experimental design, round 2 - January 2018"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(FrF2)
+library(zoo)
+source("exp_table_generator.R")
+source("exp_table_metadata.R")
+source("exp_table_randomizer.R")
+source("osmolality_calculator.R")
+source("pH_calculator.R")
+source("stock_volume_calculator.R")
+
+all_factors<-list("Yeast_extract"=24,   #units: g/L
+                  "Yeast_extract_source"="Sigma",
+                  "Glycerol"=5,  #units: g/L
+                  "Magnesium_sulfate"=0.12, #units: g/L
+                  "Tryptone"=12, #units: g/L
+                  "pH"=7.5,
+                  "Buffer_capacity"=90,  #units: mM
+                  "Osmolality"=750,     #units: mmol/kg
+                  "MTP_shake_speed"=460,  #units: rpm
+                  "MTP_volume"=2.5,   #units: mL
+                  "MTP_fill_volume"=0.1,   #units: fraction
+                  "MTP_cover"="Aeraseal",
+                  "MTP_bottom"="Round",
+                  "Flask_baffles"=NA,
+                  "Flask_volume"=NA,
+                  "Flask_fill_volume"=NA,
+                  "Flask_cover"=NA,
+                  "Time"=48,    #units: hours
+                  "Temperature"=30,   #units: degrees C
+                  "Inoculum_amount"=0.01,   #units: OD600
+                  "Inoculum_age"=16,    #units: hours
+                  "Chloramphenicol"=0.025)  #units: g/L (mg/mL)
+
+factorial_factors<-list('Inoculum_amount'=c(0.0025,0.04),
+                        'Inoculum_age'=c(3,118),
+                        'Chloramphenicol'=c(0.00625,0.1), 
+                        'Temperature'=c(30,37),
+                        'Tryptone'=c(10,14),
+                        'Buffer_capacity'=c(70,110),
+                        'MTP_cover'=c("Aeraseal","Aluminum_seal"),
+                        'MTP_bottom'=c("Round","Pyramidal"))
+
+centerpoint_stock_list<-list("Yeast_extract"=120,  #units: g/L
+                             "Tryptone"=120,  #units: g/L
+                             "Glycerol"=90,  #units: g/L
+                             "Magnesium_sulfate"=300,  #units: g/L
+                             "Sodium_chloride"=100,  #units: g/L
+                             "Dipotassium_phosphate"=174, #units: g/L
+                             "Potassium_phosphate"=80,  #units: g/L
+                             "Chloramphenicol"=25) #units: g/L
+
+ff_stock_list<-list("Yeast_extract"=120,  #units: g/L
+                    "Tryptone"=120,  #units: g/L
+                    "Glycerol"=90,  #units: g/L
+                    "Magnesium_sulfate"=300/10,  #units: g/L
+                    "Sodium_chloride"=100,  #units: g/L
+                    "Dipotassium_phosphate"=174, #units: g/L
+                    "Potassium_phosphate"=80,  #units: g/L
+                    "Chloramphenicol"=25/10) #units: g/L
+
+osmolality_list<-list("Yeast_extract"=6/1000, #units: mol/g
+                      "Tryptone"=6/1000,   #units: mol/g
+                      "Glycerol"=1/92,     #units: mol/g
+                      "Dipotassium_phosphate"=3/174,  #units: mol/g
+                      "Potassium_phosphate"=2/136,   #units: mol/g
+                      "Magnesium_sulfate"=2/120)  #units: mol/g
+
+pH_list <- list("conj_base"="Dipotassium_phosphate", 
+                "conj_acid"="Potassium_phosphate",
+                "cb_mm"=174, #A- is K2HPO4 (molar mass is 174 g/mol),
+                "ca_mm"=136, #HA is KH2PO4 (molar mass is 136 g/mol),
+                "pKa"=6.86)  #pKa of phosphate buffer is 6.86
+  
+
+salt_list<-list("name"="Sodium_chloride",mm=58.4,ionic_strength=2)
+
+
+```
+
+
+Centerpoints run 1: e44
+```{r}
+
+e44_design_table<-exp_table_generator(all_factors=all_factors, num_centerpoints = 4, num_blanks = 4) %>% 
+  exp_table_randomizer("C3","D6")%>%
+  pH_calculator(pH_list)%>%
+  osmolality_calculator(salt_list,osmolality_list)%>%
+  stock_volume_calculator(centerpoint_stock_list, media_volume=12000, starter_OD = 0.5)%>%
+  exp_table_metadata(starter_culture = 16, exp_number='e44', exp_date="1/17/2018", plate_streak_date = "1/11/2018", well_id=T)
+  #write_csv("180104 e44 Centerpoints.csv")
+
+
+```
+
+Non-important factors fractional factorial: e45
+```{r}
+e45_design_table<-FrF2(factor.names = factorial_factors, resolution=4, randomize = F, nruns=32)%>%
+  exp_table_generator(all_factors=all_factors, num_centerpoints = 4, num_blanks = 4) %>% 
+  exp_table_randomizer("B2","F9")%>%
+  pH_calculator(pH_list)%>%
+  osmolality_calculator(salt_list,osmolality_list)%>%
+  stock_volume_calculator(ff_stock_list, media_volume=1500, starter_OD = 0.5)%>%
+  exp_table_metadata(starter_culture = 17, exp_number='e45', exp_date="1/23/2018", plate_streak_date = "1/11/2018", well_id=T)%>%
+  group_by(Temperature,MTP_cover,MTP_bottom)%>% mutate(Exp_plate=min(Random))
+  #write_csv("180122 e45 Non-significant factors ff.csv")
+
+```
+Centerpoints run 2: e46
+```{r}
+
+e46_design_table<-exp_table_generator(all_factors=all_factors, num_centerpoints = 4, num_blanks = 4) %>% 
+  exp_table_randomizer("C3","D6")%>%
+  pH_calculator(pH_list)%>%
+  osmolality_calculator(salt_list,osmolality_list)%>%
+  stock_volume_calculator(centerpoint_stock_list, media_volume=12000, starter_OD = 0.5)%>%
+  exp_table_metadata(starter_culture = 18, exp_number='e46', exp_date="1/24/2018", plate_streak_date = "1/11/2018", well_id=T)%>%
+  #write_csv("180123 e46 Centerpoints.csv")
+
+
+```
+
+
+Centerpoints run 3: e47
+```{r}
+
+e47_design_table<-exp_table_generator(all_factors=all_factors, num_centerpoints = 4, num_blanks = 4) %>% 
+  exp_table_randomizer("C3","D6")%>%
+  pH_calculator(pH_list)%>%
+  osmolality_calculator(salt_list,osmolality_list)%>%
+  stock_volume_calculator(centerpoint_stock_list, media_volume=12000, starter_OD = 0.5)%>%
+  exp_table_metadata(starter_culture = 19, exp_number='e47', exp_date="1/31/2018", plate_streak_date = "1/23/2018", well_id=T)
+  #write_csv("180126 e47 Centerpoints.csv")
+
+
+```
+
+Centerpoints run 4: e48
+```{r}
+
+e48_design_table<-exp_table_generator(all_factors=all_factors, num_centerpoints = 4, num_blanks = 4) %>% 
+  exp_table_randomizer("C3","D6")%>%
+  pH_calculator(pH_list)%>%
+  osmolality_calculator(salt_list,osmolality_list)%>%
+  stock_volume_calculator(centerpoint_stock_list, media_volume=12000, starter_OD = 0.5)%>%
+  exp_table_metadata(starter_culture = 20, exp_number='e48', exp_date="2/3/2018", plate_streak_date = "1/23/2018", well_id=T)
+  #write_csv("180202 e48 Centerpoints.csv")
+
+```

@@ -1,0 +1,1036 @@
+---
+title: "Cell metrics experiment analysis notebook"
+output: html_notebook
+---
+
+Read in data:
+```{r read in data, echo=F, warning=F, message=F}
+
+#Set working directory
+dirnm<-"/Users/ahh1/Documents/My SugarSync/Cell Metrics/Experimental Data/R analysis files/R files for upload"
+setwd(dirnm)
+
+library(tidyverse)
+library(readxl)
+library(rmarkdown)
+library(cowplot)
+library(FrF2)
+library(nlme)
+library(lubridate)
+library(forcats)
+library(car)
+library(ggrepel)
+library(ggforce)
+library(reshape2)
+library(ggpubr)
+library(gridExtra)
+source("DCM_analysis.R")
+source("RFP_analysis.R")
+source("Main_effects_calculator.R")
+
+
+#=====================
+#READ IN DATA:
+#=====================
+
+OD_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 1, col_names = T)
+rfp_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 3, col_names = T) 
+key<-read_excel("Supplementary Data File S4.xlsx", sheet = 5, col_names = T, na="NA")
+
+  
+#=====================
+#CALIBRATION VALUES:
+#=====================
+
+#Dry cell calibration curve values. x-axis: OD700, y-axis: Dry cell mass per volume of culture (g/L)
+#Calibration values from cm-e42, averaging the runs in cm-e10 and cm-e41
+DCM_OD700_slope <- 1.343289
+DCM_OD700_intercept <- (-0.016317)
+
+dcm_calibration<-c(DCM_OD700_slope,DCM_OD700_intercept)
+
+#=======================
+#PLOTTING VARIABLES:
+#=======================
+#Light set
+other_color_light<-"#8da0cb"
+media_color_light<-"#fc8d62"
+oxygen_color_light<-"#66c2a5"
+combo_color_light<-"#636363"
+  
+#Dark set
+other_color<-"#7570b3"
+media_color<-"#d95f02"
+oxygen_color<-"#1b9e77"
+combo_color<-"#252525"
+
+#Reproducibility colors
+test_data_1_color<-"#3182bd"
+test_data_2_color<-"#9ecae1"
+centerpoint_1_color<-"#d6d802"
+centerpoint_2_color<-"#7d7f00"
+background_color<-"#b3b3b3"
+
+#Heatmap colors
+heatmap_low<-"#d9d9d9"
+heatmap_mid<-"#969696"
+heatmap_high<-"#252525"
+
+
+#Alphas
+axes_alpha=0.4
+equality_alpha=0.3
+circle_alpha=0.1
+background_alpha=0.15
+point_alpha=0.75
+
+#Point size
+point_size=2
+
+#Panel spacing
+panel_spacing=0.2
+panel_line_width=0.25
+
+#Updates to theme font sizes and layout
+theme_update(text=element_text(size=7))
+theme_update(axis.text=element_text(size=6))
+theme_update(plot.margin=unit(c(1,1,1,1),"pt"))
+theme_update(legend.spacing=unit(0, "cm"))
+theme_update(legend.margin=margin(t=0,unit="cm"))
+theme_update(axis.line.x=element_line(size=0.25))
+theme_update(axis.line.y=element_line(size=0.25))
+theme_update(axis.ticks=element_line(size=0.25))
+theme_update(axis.ticks.length=unit(2.5,"pt"))
+theme_update(axis.text.x=element_text(margin=unit(c(1.5,0,0,0),"pt")))
+theme_update(axis.text.y=element_text(margin=unit(c(0,1.5,0,0),"pt")))
+theme_update(axis.title.x=element_text(margin=unit(c(2,0,0,0),"pt")))
+theme_update(axis.title.y=element_text(margin=unit(c(0,2,0,0),"pt")))
+theme_update(strip.text=element_text(size=5.5))
+theme_update(strip.text.x=element_text(margin=unit(c(3,0,3,0),"pt")))
+theme_update(strip.text.y=element_text(margin=unit(c(0,3,0,3),"pt")))
+
+
+facet_labels<-c(dcm="Dry cell mass (g/L)", titer="Titer (AFU/L)", yield="Titer / DCM = Yield (AFU/g)" )
+facet_labels_2<-c(DCM="Dry cell mass", Titer="Titer",Yield="Yield (Dry cell mass / Titer)")
+facet_labels_3<-c(dcm="Dry cell mass \n(g/L)", titer="Titer \n(AFU/L)", yield="Titer / DCM = Yield \n(AFU/g)" )
+shaker_facet_labels<-c('230'="Shake speed = 230 rpm", '460'="Shake speed = 460 rpm")
+mag_sulfate_labels<-c('0'='0 g/L Magnesium sulfate', '0.24'='0.24 g/L Magnesium sulfate')
+flask_baffle_labels<-c('1'="Baffled", '2'="Unbaffled")
+
+
+```
+
+Data transformations:
+```{r data transformation, echo=F, warning=F, message=F}
+#=====================
+#DATA PROCESSING STEPS
+#=====================
+
+#Convert the fluorescence to fluorecsence per mL (titer). 
+rfp_analyzed<-RFP_analysis(rfp_raw,key)
+
+#Do the same for the OD values.
+od_analyzed<-DCM_analysis(OD_raw,key,dcm_calibration)
+
+
+#Merge the calculated lycopene concentration with dry cell mass.
+#Calculate yield, the mass of lycopene produced per biomass. Result has units of, mg/g. (titer in mg/L, dcm in g/L).
+data_merge<-merge(rfp_analyzed,select(od_analyzed,Well_id,dcm),by="Well_id")%>%
+  mutate(yield = titer/dcm)%>%
+  filter(Category!="Blank")
+
+
+#============================================
+#Create a summary table, summarizing key metrics by well and by type.
+#============================================
+
+#Summary_tab is the full experimental design table. Columns are factor levels and responses, rows are runs
+#Recode 
+summary_tab<-data_merge%>%
+  group_by(Well_id)%>%
+  summarize_at(c('titer','dcm','yield'), mean, na.rm=T)%>%
+  merge(key, by="Well_id")%>%
+  arrange(desc(Category),Exp_number,Run_number)%>%
+  mutate(Yeast_extract_source=as.factor(Yeast_extract_source))%>%
+  mutate(MTP_bottom=as.numeric(fct_recode(MTP_bottom,
+                               '1'="Round",
+                               '-1'="Pyramidal")))%>%
+  mutate(MTP_cover=as.numeric(fct_recode(MTP_cover,
+                               '-1'="Aeraseal",
+                               '1'="Foil")))%>%
+   rename(Well_bottom=MTP_bottom, 
+         Well_cover=MTP_cover, 
+         Well_fill_volume=MTP_fill_volume, 
+         Well_volume=MTP_volume,
+         Shake_speed=MTP_shake_speed)
+#write_excel_csv(summary_tab ,"Cell metrics experiments rfp data.csv")
+
+#Reshape the summary_tab to have all responses in a single column
+metric_tibble<-summary_tab%>%
+  gather('titer','dcm','yield',key="metric",value="response")
+
+```
+
+
+
+Calculate main effects and interactions, plot normal probability plot:
+```{r main effects and interactions, echo=F, warning=F, message=F}
+
+rfp_first_round_factors_list = list(
+  "e34"=c("Well_bottom","Well_cover","Well_volume","Well_fill_volume","Shake_speed"),
+  "e29"=c("Buffer_capacity","Glycerol","pH","Osmolality","Tryptone","Yeast_extract","Yeast_extract_source","Magnesium_sulfate"),
+  "e33"=c("Time","Temperature","Antibiotic_conc","Inoculum_amount","Inoculum_age"))
+
+rfp_second_round_factors_list=list("e35"=c('Time','Temperature','Yeast_extract','Yeast_extract_source','Glycerol','Magnesium_sulfate','pH','Well_volume','Well_fill_volume'))
+
+metrics_list = list("dcm","titer","yield")
+
+
+rfp_effects<-Main_effects_calculator(summary_tab, rfp_first_round_factors_list, metrics_list)%>%
+  mutate(product="rfp",
+    category = fct_recode(Exp_number,
+                                 "Container"="e34",
+                                 "Media"="e29",
+                                 "Other"="e33"))
+
+rfp_second_round_effects<-Main_effects_calculator(summary_tab, rfp_second_round_factors_list, metrics_list)
+
+
+#Create one-letter codes for each factor
+#rfp_effects<-rfp_second_round_effects%>%
+rfp_effects<-rfp_effects%>%
+  mutate(factor_one_letter=fct_recode(factor_one,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))%>%
+  mutate(factor_two_letter=fct_recode(factor_two,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))
+
+ for (j in 1:dim(rfp_effects)[1]){
+    if (is.na(rfp_effects$factor_two_letter[j])){
+      rfp_effects$factor_letter[j]<-as.character(rfp_effects$factor_one_letter[j])
+    } else {
+      rfp_effects$factor_letter[j]<-paste(rfp_effects$factor_one_letter[j], rfp_effects$factor_two_letter[j], sep=":")
+    }
+  }
+
+#Reshape the lycopene effects for plotting
+
+rfp_plotting<-rfp_effects%>%
+  select(metric, Exp_number, factor, factor_letter, category, product, relative_effect, main_effect)%>%
+  spread(key=metric,value=relative_effect)%>%
+  filter(abs(Titer)>0.2 | abs(DCM)>0.1 | main_effect==T) 
+
+rfp_plotting_melt<-rfp_plotting%>%
+  gather('Titer','DCM','Yield',key="metric",value="response")
+
+#write_csv(rfp_effects, "RFP main effects and interactions second round.csv")
+
+#Normal probability plot
+normplot<-ggplot(data=rfp_effects, aes((effect),(norm_prob)))+
+  geom_label(aes(label=factor_letter, fill=category),alpha=0.7,size=1.7, label.padding=unit(0.1,"lines"),  label.r=unit(0.085,"lines"))+
+  facet_grid(Exp_number~metric,scales="free_x")+
+  scale_fill_manual(values=c(media_color_light,other_color_light,oxygen_color_light),guide="none")+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  theme(strip.background = element_blank())+
+  xlab("Effect")+
+  ylab("Normal probability score")
+normplot    
+#save_plot("RFP normal probability plot.pdf",normplot,base_height=6/1.3,base_width=6/1.3)
+
+```
+
+Generate a heat map of experimental factor levels
+```{r experimental table heat map}
+#Create the experimental data frame -- all 22 factors and 3 responses as columns, and all 252 runs as rows
+key_heat<-summary_tab%>%
+  select(Exp_number, Category, unlist(rfp_first_round_factors_list), unlist(metrics_list))%>%
+  mutate(Category=ifelse(Exp_number %in% c("e35"),"Exp-2",Category))
+
+key_heat$Category<-factor(key_heat$Category, levels=c("Exp","Exp-2","Centerpoint"))
+key_heat<-key_heat[order(key_heat$Category),]%>%
+  mutate(Run_number=1:n())
+
+#Split out the responses
+response_heat<-key_heat%>%
+  select(Exp_number, Category, Run_number, unlist(metrics_list))%>%
+  rename("Dry Cell Mass"=dcm, "Titer"=titer, "Yield"=yield)%>%
+  gather(-Run_number, -Exp_number, -Category, key=metric, value=response)%>%
+  group_by(metric)%>%
+  #Normalize each response to range from 0 to 1
+  mutate(response=(response - min(response))/(max(response)-min(response)))%>%
+  mutate(metric_order=fct_recode(metric,
+                                 "3"="Dry Cell Mass",
+                                 "2"="Titer",
+                                 "1"="Yield"))%>%
+  mutate(metric_order=as.numeric(metric_order))
+
+#Split out the factors
+key_heat<-key_heat%>%
+  select(-titer,-yield,-dcm)%>%
+  gather(-Run_number, -Exp_number, -Category, key=factor, value=level)%>%
+  mutate(level=as.numeric(level))%>%
+  group_by(factor)%>%
+  #Relabel each factor as -1, 0 or 1
+  mutate(level=ifelse(level==max(level, na.rm=T),1, ifelse(level==min(level, na.rm=T),-1,0)))%>%
+  mutate(factor_order=fct_recode(factor, '22'="Buffer_capacity",
+                                 "21"="Glycerol",
+                                 "20"="Magnesium_sulfate",
+                                 "19"="Osmolality",
+                                 "18"="pH",
+                                 "17"="Tryptone",
+                                 "16"="Yeast_extract",
+                                 "15"="Yeast_extract_source",
+                                 "14"="Well_bottom",
+                                 "13"="Well_cover",
+                                 "12"="Well_fill_volume",
+                                 "11"="Shake_speed",
+                                 "10"="Well_volume",
+                                 "9"="Flask_baffles",
+                                 "8"="Flask_cover",
+                                 "7"="Flask_fill_volume",
+                                 "6"="Flask_volume",
+                                 "5"="Antibiotic_conc",
+                                 "4"="Inoculum_age",
+                                 "3"="Inoculum_amount",
+                                 "2"="Temperature",
+                                 "1"="Time"))%>%
+  mutate(factor_order=as.numeric(factor_order))%>%
+  mutate(fct_cat=fct_recode(factor,
+                            'media'="Buffer_capacity",
+                                 "media"="Glycerol",
+                                 "media"="Magnesium_sulfate",
+                                 "media"="Osmolality",
+                                 "media"="pH",
+                                 "media"="Tryptone",
+                                 "media"="Yeast_extract",
+                                 "media"="Yeast_extract_source",
+                                 "oxygen"="Well_bottom",
+                                 "oxygen"="Well_cover",
+                                 "oxygen"="Well_fill_volume",
+                                 "oxygen"="Shake_speed",
+                                 "oxygen"="Well_volume",
+                                 "oxygen"="Flask_baffles",
+                                 "oxygen"="Flask_cover",
+                                 "oxygen"="Flask_fill_volume",
+                                 "oxygen"="Flask_volume",
+                                 "other"="Antibiotic_conc",
+                                 "other"="Inoculum_age",
+                                 "other"="Inoculum_amount",
+                                 "other"="Temperature",
+                                 "other"="Time"))%>%
+  mutate(factor_plotting=fct_recode(factor,
+                            'Buffer capacity'="Buffer_capacity",
+                                 "Magnesium sulfate"="Magnesium_sulfate",
+                                 "Yeast extract"="Yeast_extract",
+                                 "Yeast extract source"="Yeast_extract_source",
+                                 "Well bottom"="Well_bottom",
+                                 "Well cover"="Well_cover",
+                                 "Well fill volume"="Well_fill_volume",
+                                 "Shake speed"="Shake_speed",
+                                 "Well volume"="Well_volume",
+                                 "Flask baffles"="Flask_baffles",
+                                 "Flask cover"="Flask_cover",
+                                 "Flask fill volume"="Flask_fill_volume",
+                                 "Flask volume"="Flask_volume",
+                                 "Antibiotic conc"="Antibiotic_conc",
+                                 "Inoculum age"="Inoculum_age",
+                                 "Inoculum amount"="Inoculum_amount"))
+
+  
+key_heatmap<-ggplot(data=key_heat,aes(y=fct_reorder(factor, factor_order),x=Run_number))+
+  geom_tile(aes(fill=as.factor(level)))+
+  xlim(-25,177)+
+  #xlab('Experimental Run')+
+  xlab('')+
+  ylab('')+
+  geom_text(aes(x=-1,label=factor_plotting,color=fct_cat),hjust="right",fontface="plain",family="sans",size=2.2)+
+  scale_fill_manual(values=c(heatmap_low,heatmap_mid,heatmap_high),labels=c("Low","Center","High","NA"), name="Factor Level")+
+  scale_color_manual(values=c(media_color,other_color,oxygen_color),guide='none')+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.text.y=element_blank(), axis.ticks.y = element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x=element_text(margin=unit(c(0,0,-10,0),"pt")),
+        legend.key.size = unit(0.5,"lines"),
+        legend.box.spacing = unit(0,"pt"),
+        legend.box.margin = margin(0,0,0,0),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+key_heatmap
+
+response_heatmap<-ggplot(data=response_heat, aes(y=fct_reorder(metric, metric_order),x=Run_number))+
+  geom_step(aes(x=Run_number,y=response),size=0.25)+
+  facet_grid(metric~.)+
+  xlim(-25,177)+
+  xlab('Experimental Run')+ylab('')+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.text.y=element_blank(), axis.ticks.y = element_blank(),
+        #axis.line = element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        strip.text.y = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        panel.spacing = unit(3, "pt"))
+response_heatmap
+
+heatmap_composite<-plot_grid(key_heatmap, response_heatmap, ncol=1, nrow = 2,axis="lrbt",
+          align="hv", rel_heights = c(4,1))
+heatmap_composite
+
+#save_plot("Experimental design table rfp.pdf",heatmap_composite,base_height = 2.5, base_width = 7.35)
+
+```
+
+
+
+```{r main effects and interactions plot}
+main_effects_letter_plot<-ggplot(data=rfp_plotting_melt, aes(y=(abs(response)),x=category))+
+  geom_label_repel(aes(label=factor_letter,fill=category), color="black", size=1.5, alpha=0.9, direction="x",
+                   segment.alpha = 0, seed=123, box.padding = 0.02, label.padding = 0.08, label.r=0.085, point.padding = 0)+
+  scale_color_manual(values=c(oxygen_color,media_color,other_color),guide="none")+
+  scale_x_discrete(limits=c("Media","Container","Other"))+
+  scale_fill_manual(values=c(oxygen_color_light,media_color_light,other_color_light),guide="none")+
+  facet_grid(~metric, labeller = labeller(metric=facet_labels_2))+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  theme(panel.spacing = unit(panel_spacing,"lines"), strip.background = element_blank(), 
+        axis.line = element_blank())+
+  ylab('Relative Effect Magnitude')+xlab('Factor category')
+main_effects_letter_plot
+#save_plot("RFP Main effects vertical scatter plot.pdf",main_effects_letter_plot,base_height=2.1,base_width=4.2)
+
+
+rfp_factor_table<-rfp_plotting%>%
+  mutate(factor=fct_reorder(factor, Yield))
+
+#Create factor table ordered by yield
+
+#rfp_factor_table<-rfp_plotting[order(-abs(rfp_plotting$Yield)),]%>%
+rfp_factor_table<-rfp_plotting%>%
+  filter(main_effect==T)%>%
+  select(factor_letter, factor, category)%>%
+  rename(Letter=factor_letter, Factor=factor)%>%
+  arrange(Letter)%>%
+  mutate(category=fct_recode(category,
+                              "#66c2a5"="Container",
+                              "#fc8d62"="Media",
+                              "#8da0cb"="Other"))
+
+col_vector<-as.vector(rfp_factor_table$category)
+
+tt3<-ttheme_minimal(core=list(bg_params=list(fill=col_vector,col="black"), fg_params=list(col="black")))
+
+#save_plot(grid.table(rfp_factor_table[,1:2], theme=tt3, rows=NULL), filename = "rfp Main effects table.pdf", base_height = 7, base_width = 4 )
+grid.table(rfp_factor_table[,1:2], theme=tt3, rows=NULL)
+
+
+#Create factor table ordered by category and alphabetically
+rfp_factor_table<-rfp_plotting[order(rfp_plotting$category, rfp_plotting$factor_letter ),]%>%
+  filter(main_effect==T)%>%
+  select(factor_letter, factor, category)%>%
+  rename(Letter=factor_letter, Factor=factor)%>%
+  mutate(category=fct_recode(category,
+                              "#66c2a5"="Container",
+                              "#fc8d62"="Media",
+                              "#8da0cb"="Other"))
+
+col_vector<-as.vector(rfp_factor_table$category)
+
+tt3<-ttheme_minimal(core=list(bg_params=list(fill=col_vector,col="black"), fg_params=list(col="black")))
+
+#save_plot(grid.table(rfp_factor_table[,1:2], theme=tt3, rows=NULL), filename = "RFP Main effects table category ordered.pdf", base_height = 7, base_width = 4 )
+```
+
+
+
+Main effects plot:
+```{r main effects plot, echo=F, warning=F, message=F}
+#=======================
+#Main-effects plot
+#=======================
+main_effects_tibble_1<-summary_tab%>%
+  filter(Category=="Exp")%>%
+  filter(Exp_number %in% c("e34"))%>%
+  gather('titer','dcm','yield',key="metric",value="response")%>%
+  gather('Shake_speed','Well_volume','Well_fill_volume','Well_cover','Well_bottom',
+         key="factor",value="level")%>%
+  select(metric, factor, level, response, Exp_number)%>%
+  mutate(level=as.numeric(level))
+
+main_effects_tibble_2<-summary_tab%>%
+  filter(Category=="Exp")%>%
+  filter(Exp_number %in% c("e29"))%>%
+  gather('titer','dcm','yield',key="metric",value="response")%>%
+  gather('Yeast_extract','Yeast_extract_source','Tryptone','Glycerol','Magnesium_sulfate','pH','Buffer_capacity','Osmolality',
+         key="factor",value="level")%>%
+  select(metric, factor, level, response, Exp_number)%>%
+  mutate(level=as.numeric(level))
+
+main_effects_tibble_3<-summary_tab%>%
+  filter(Category=="Exp")%>%
+  filter(Exp_number %in% c("e33"))%>%
+  gather('titer','dcm','yield',key="metric",value="response")%>%
+  gather('Time','Temperature','Antibiotic_conc','Inoculum_age','Inoculum_amount',
+         key="factor",value="level")%>%
+  select(metric, factor, level, response, Exp_number)%>%
+  mutate(level=as.numeric(level))
+
+main_effects_tibble<-full_join(main_effects_tibble_1,main_effects_tibble_2)%>%
+  full_join(main_effects_tibble_3)
+
+main_effects_plot<-ggplot(main_effects_tibble,aes(x=as.factor(level),y=response))+
+  #geom_smooth(method="lm",alpha=0.5)+
+  geom_point(aes(fill=Exp_number),shape=21,size=point_size,alpha=0.7)+
+  stat_summary(fun.y="mean",color="black",size=10,shape=95,geom="point")+
+  facet_grid(metric~factor,scales="free", labeller = labeller(metric=facet_labels_3))+
+  scale_shape_manual(values=c(22,21))+theme(legend.position="none")+
+  scale_fill_manual(values=c(media_color_light,other_color_light,oxygen_color_light))+
+  panel_border(colour="gray50",size=1,linetype=1)+
+  theme(strip.background = element_blank(),
+        strip.text.x = element_text(angle = 60, vjust=0))+
+  xlab("")+
+  ylab("Response")
+main_effects_plot
+
+#save_plot("RFP main effects plot.pdf", main_effects_plot, base_height = 3.5, base_width = 12)
+```
+
+
+Plot interaction vignettes:
+```{r interaction vignettes}
+#---------
+#Magnesium sulfate : yeast extract source interactions
+#---------
+
+mag_sulf_means<-metric_tibble%>%
+  filter(Exp_number %in% c("e29", "e35") , Category=="Exp", metric!="yield")%>%
+  group_by(metric,Magnesium_sulfate,Yeast_extract_source)%>%
+  summarize(means=mean(response))
+
+mag_sulf_plot<-ggplot(data=filter(metric_tibble, Exp_number %in% c("e29", "e35") , Category=="Exp", metric!="yield"),aes(x=response))+
+  geom_segment(data=mag_sulf_means, aes(x=means, xend=means, y=0.47, yend=0.5, color=as.factor(Yeast_extract_source)), size=0.25, linetype="solid")+
+  facet_grid(Magnesium_sulfate~metric,labeller=labeller(metric=facet_labels, Magnesium_sulfate=mag_sulfate_labels))+
+  geom_density(aes(fill=as.factor(Yeast_extract_source)),color="black", size=0.25, alpha=0.75)+
+  geom_rug(aes(color=as.factor(Yeast_extract_source)),size=0.1)+
+  scale_fill_manual(name="Yeast extract \nsource",labels=c("Sigma","Millipore"),values=c("#fa5d1e","#fdc9b4"))+
+  scale_color_manual(name="Yeast extract \nsource",labels=c("Sigma","Millipore"),values=c("#fa5d1e","#fdc9b4"))+
+  xlab('')+
+  xlim(-1,16)+ylim(0,0.5)+
+  ylab("Density")+
+  theme(strip.background = element_blank(), 
+        legend.position = "right",
+        legend.key.size = unit(0.5,"lines"))+
+  panel_border(colour="black",linetype=1)
+mag_sulf_plot
+save_plot("rfp magnesium sulfate plot.pdf",mag_sulf_plot,base_height=2.5,base_width=3.35)
+
+metric_tibble%>%
+  group_by(metric,Magnesium_sulfate,Yeast_extract_source)%>%
+  filter(Exp_number %in% c("e29","e35"), Category=="Exp")%>%
+  summarize(mean(response))
+
+
+
+#---------
+#MTP oxygenation factors interactions
+#---------
+
+MTP_oxgenation_interactions<-ggplot(filter(summary_tab, Exp_number=="e34",Category=="Exp"), aes(y=titer,x=dcm))+
+  geom_point(aes(shape=as.factor(Well_fill_volume),
+                 fill=as.factor(Well_volume)),
+             size=point_size,alpha=0.8,stroke=0.25)+
+  coord_equal()+
+  scale_fill_manual(values=c("#b6e2d4","#245b4a"),name="Well volume",labels=c("2.5 mL (96 wp)","10 mL (24 wp)"))+
+  scale_shape_manual(values=c(21,22),name="Well fill volume",labels=c("10%","30%"))+
+  scale_x_continuous(breaks=seq(0,16,2))+
+  scale_y_continuous(breaks=seq(0,16,2),limits=c(0,10))+
+  guides(fill=guide_legend(override.aes = list(shape=21,colour=NA)))+
+  ylab("Titer (AFU/L)")+xlab("Dry cell mass (g/L)")+
+  facet_grid(~Shake_speed,labeller=labeller(Shake_speed=shaker_facet_labels))+
+  theme(strip.background = element_blank(), 
+        #legend.position=c(0.55,0.2),
+        legend.position="right",
+        legend.key.size = unit(0.5,"lines"),
+        legend.margin = margin(0,0,10,0))+
+  panel_border(colour="black",linetype=1)
+MTP_oxgenation_interactions
+
+#save_plot("RFP MTP oxygen interactions.pdf",MTP_oxgenation_interactions,base_height=2.5,base_width=4)
+
+
+
+
+```
+
+Modeling
+```{r linear model, echo=F, warning=F, message=F}
+#=====================
+#Linear model
+#=====================
+
+#Build a linear model to predict the response in the final round from the observations in the initial round
+
+#Include in the model points that were in the first rounds
+#Exclude from the model points that were in the final round, and centerpoints
+training_data<-filter(metric_tibble, Category=="Exp" & Exp_number %in% c("e29","e33","e34"))%>%
+  mutate(data_category="train",test_data=F)
+test_data_1<-filter(metric_tibble, Category=="Exp" & Exp_number=="e35")%>%
+  mutate(data_category="test_1",test_data=T)
+
+#Full model--all terms
+models<-training_data%>%
+ split(.$metric)%>%
+ map(~lm(response~(Yeast_extract+Yeast_extract_source+Tryptone+Glycerol+Magnesium_sulfate+
+              pH+Buffer_capacity+Osmolality+Yeast_extract_source:Magnesium_sulfate+
+              Shake_speed+Well_volume+Well_fill_volume+Well_bottom+Well_cover+
+              Shake_speed:Well_volume+Shake_speed:Well_fill_volume+Well_volume:Well_fill_volume+
+              Time*Temperature+Antibiotic_conc+Inoculum_age+Inoculum_amount), data=.))
+map(models, summary)
+map(models, anova)
+
+#Fit the model to the training and test data (the training data is for plotting purposes)
+combined_data<-full_join(training_data, test_data_1)
+titer_data<-combined_data%>%
+  filter(metric=="titer")
+titer_data$predicted=predict.lm(models$titer, newdata=titer_data)
+dcm_data<-combined_data%>%
+  filter(metric=="dcm")
+dcm_data$predicted=predict.lm(models$dcm, newdata=dcm_data)
+yield_data<-combined_data%>%
+  filter(metric=="yield")
+yield_data$predicted=predict.lm(models$yield, newdata=yield_data)
+fitted_data<-full_join(titer_data, dcm_data)%>%
+  full_join(yield_data)%>%
+  mutate(residuals = response - predicted)
+
+#write_csv(fitted_data, "RFP model fitted data.csv")
+
+#Calculate r-squared for fits
+fitted_data%>%
+  group_by(metric,data_category)%>%
+  summarize(r_sq=cor(response,predicted, method="pearson", use="pairwise.complete.obs")^2)
+
+#Plot of predicted responses versus observed responsese
+fitted_plot<-ggplot(filter(fitted_data, metric!="yield"))+
+  geom_abline(slope=1,intercept=0,color="#999999",linetype="dashed")+
+  geom_point(aes(x=predicted,y=response,color=data_category),shape=16,alpha=0.7,size=3.5)+
+  scale_color_manual(values=c(test_data_1_color,"grey60"),name="Data Category",
+                    labels=c("Largest factor effects (Test data)", 
+                             "First Rounds (Training data)"))+
+  #scale_shape_manual(values=c(22,21),guide='none')+
+  scale_size_manual(values=sizes_two,guide='none')+
+  scale_x_continuous(breaks=seq(0,16,4),limits=c(0,16))+
+  scale_y_continuous(breaks=seq(0,16,4),limits=c(0,16))+
+  coord_equal()+
+  theme(panel.spacing = unit(0.5,"lines"), strip.background = element_blank(), strip.text = element_text(size=14))+
+  panel_border(colour="black",size=1,linetype=1)+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels))+
+  xlab("Predicted response from linear model")+
+  ylab("Observed response")+
+  coord_fixed()
+fitted_plot
+#save_plot("rfp Model plots.pdf",fitted_plot,base_height=5,base_width=12)
+
+
+fitted_plot_dcm<-ggplot(filter(fitted_data, metric=="dcm"))+
+  geom_abline(slope=1,intercept=0,color="#999999",linetype="dashed")+
+  geom_point(aes(x=predicted,y=response,fill=data_category,alpha=data_category),shape=21,size=point_size*0.7)+
+  scale_fill_manual(values=c(test_data_1_color,background_color),name="Data Category",
+                    labels=c("Training set",
+                             "Test set"),guide='none')+
+  scale_alpha_manual(values=c(point_alpha,point_alpha/2),guide='none')+
+  scale_x_continuous(breaks=seq(0,16,4),limits=c(4,16))+
+  scale_y_continuous(breaks=seq(0,16,4),limits=c(4,16))+
+  coord_equal()+
+  theme(panel.spacing = unit(panel_spacing,"lines"), strip.background = element_blank(), 
+        aspect.ratio = 1)+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels),scales="free")+
+  xlab("")+
+  ylab("")+
+  coord_fixed()
+fitted_plot_dcm
+
+fitted_plot_titer<-ggplot(filter(fitted_data, metric=="titer"))+
+  geom_abline(slope=1,intercept=0,color="#999999",linetype="dashed")+
+ geom_point(aes(x=predicted,y=response,fill=data_category,alpha=data_category),shape=21,size=point_size*0.7)+
+  scale_fill_manual(values=c(test_data_1_color,background_color),name="Data Category",
+                    labels=c("Training set",
+                             "Test set"),guide='none')+
+  scale_alpha_manual(values=c(point_alpha,point_alpha/2),guide='none')+
+  scale_x_continuous(breaks=seq(0,12,4),limits=c(0,12))+
+  scale_y_continuous(breaks=seq(0,12,4),limits=c(0,12))+
+  coord_equal()+
+  theme(panel.spacing = unit(panel_spacing,"lines"), strip.background = element_blank(), 
+        aspect.ratio = 1)+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels),scales="free")+
+  xlab("")+
+  ylab("")+
+  coord_fixed()
+fitted_plot_titer
+
+fitted_plot_yield<-ggplot(filter(fitted_data, metric=="yield"))+
+  geom_abline(slope=1,intercept=0,color="#999999",linetype="dashed")+
+ geom_point(aes(x=predicted,y=response,fill=data_category,alpha=data_category),shape=21,size=point_size*0.7)+
+  scale_fill_manual(values=c(test_data_1_color,background_color),name="Data Category",
+                    labels=c("Training set",
+                             "Test set"),guide='none')+
+  scale_alpha_manual(values=c(point_alpha,point_alpha/2),guide='none')+
+  scale_x_continuous(breaks=seq(0,1.5,0.5),limits=c(0,1.5))+
+  scale_y_continuous(breaks=seq(0,1.5,0.5),limits=c(0,1.5))+
+  coord_equal()+
+  theme(panel.spacing = unit(panel_spacing,"lines"), strip.background = element_blank(), 
+        aspect.ratio = 1, axis.line = element_blank())+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels),scales="free")+
+  xlab("")+
+  ylab("")+
+  coord_fixed()
+fitted_plot_yield
+
+
+fitted_composite<-plot_grid(fitted_plot_dcm, fitted_plot_titer, fitted_plot_yield, ncol=3, nrow = 1,
+          align="hv")
+fitted_composite
+
+#save_plot("RFP model plots composite.pdf",fitted_composite,base_height = 2, base_width = 5)
+
+#Residual plot
+residual_plot<-ggplot(filter(fitted_data))+
+  geom_abline(slope=0,intercept=0,color="#999999",linetype="dashed")+
+  geom_point(aes(x=predicted,y=residuals,fill=data_category, alpha=data_category),shape=21,size=point_size*0.7)+
+  scale_fill_manual(values=c(test_data_1_color,background_color),name="Data Category",
+                    labels=c("Largest factor effects (Test data)", 
+                             "Smallest factor effects (Test data)",
+                             "First Rounds (Training data)"))+
+  scale_alpha_manual(values=c(point_alpha,point_alpha/2),guide='none')+
+  #scale_x_continuous(breaks=seq(0,16,4),limits=c(0,16))+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels), scales="free")+
+  panel_border(colour="black",size=panel_line_width*2,linetype=1)+
+  xlab("Predicted response from linear model")+ylab("Residual")+
+  theme(legend.position="none",strip.background = element_blank())
+residual_plot
+#save_plot("RFP model residuals plot.pdf", residual_plot, base_height = 2, base_width = 5)
+
+```
+
+
+Centerpoint plots
+```{r centerpoints}
+#----------------------
+#Plot titer vs. dcm
+#----------------------
+
+rfp_first_round_data<-summary_tab%>%
+  filter(Exp_number %in% c('e29','e33','e34'))%>%
+  mutate(cat=Exp_number)%>%
+  mutate(cat=fct_relevel(cat,"e34", after=1 ))%>%
+  mutate(cat=fct_recode(cat,
+                        "Media"="e29",
+                        "Oxygen"="e34",
+                        "Other"="e33"))
+
+titer_dcm<-ggplot(rfp_first_round_data,aes(y=titer,x=dcm))+
+  geom_point(aes(fill=cat),shape=21,alpha=0.9,size=point_size)+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  scale_fill_manual(values=c(media_color_light,oxygen_color_light,other_color_light),name="Factor Category")+
+  theme(legend.position = c(1,1))+
+  ylab("Titer (AFU/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm
+#save_plot("rfp Dynamic range of titer and dcm bottom_legend.pdf",titer_dcm,base_height=2,base_width=2)
+
+test_points<-filter(summary_tab,Category=="Exp",Exp_number %in% c("e35"))
+
+#Test points plotted over the overall grey background points
+titer_dcm_background_testpoints<-ggplot()+
+  geom_point(data=rfp_first_round_data,aes(y=titer,x=dcm),fill=background_color,shape=21,alpha=point_alpha/2,size=point_size)+
+  geom_point(data=test_points,aes(y=titer,x=dcm,fill=Exp_number),
+             size=point_size,alpha=point_alpha,shape=21)+
+  scale_fill_manual(values=c(test_data_1_color,test_data_2_color),name='Group 2  - Test points  ', labels=c(" "," "))+
+  theme(legend.position = c(1,1))+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  ylab("Titer (AFU/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm_background_testpoints
+save_plot("RFP Dynamic range of titer and dcm with test points.pdf",titer_dcm_background_testpoints,base_height=2,base_width=2)
+
+#Create two tibbles for the centerpoint data
+centerpoints<-filter(summary_tab,Category=="Centerpoint")%>%
+  mutate(rep_cat=1)
+
+centerpoints_metric<-filter(summary_tab,Category=="Centerpoint" | Exp_number %in% c("e30","e45"))%>%
+  #select(-yield)%>%
+  gather('titer','dcm','yield', key="metric",value="response")%>%
+  mutate(rep_cat=ifelse(Exp_number %in% c("e26","e27","e28","e30","e32","e37","e38"), 1,2))%>%
+  mutate(elapsed_days=(difftime(Exp_date, min(summary_tab$Exp_date), units="days"))+1)
+
+#Centerpoints plotted over the overall grey background points
+titer_dcm_background_centerpoints<-ggplot()+
+  geom_point(data=rfp_first_round_data,aes(y=titer,x=dcm),fill=background_color,shape=21,alpha=point_alpha/2,size=point_size)+
+  geom_point(data=centerpoints,aes(y=titer,x=dcm,fill=as.factor(rep_cat)),
+             size=point_size,alpha=point_alpha,shape=21)+
+  scale_fill_manual(values=c(centerpoint_2_color,centerpoint_1_color),name="Group 3 - Centerpoints  ",labels=c(" "," ") )+
+  theme(legend.position = c(1,1))+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  ylab("Titer (AFU/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm_background_centerpoints
+save_plot("RFP Dynamic range of titer and dcm with centerpoints.pdf",titer_dcm_background_centerpoints,base_height=2,base_width=2)
+
+```
+
+Analyze the centerpoints:
+```{r}
+
+#---------------------
+#Plot centerpoints
+#---------------------
+
+
+#Create a series of zoomed-in plots to highlight the centerpoints for the presentation:
+
+#The overall scatterplot, without legend
+titer_dcm<-ggplot(rfp_first_round_data,aes(y=titer,x=dcm))+
+  geom_point(aes(fill=cat),shape=21,alpha=0.9,size=5)+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  scale_fill_manual(values=c(media_color_light,oxygen_color_light,other_color_light),name="Factor Category",guide='none')+
+  theme(legend.position = "right")+
+  ylab("Titer (mg/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm
+save_plot("rfp Dynamic range of titer and dcm.pdf",titer_dcm,base_height=5,base_width=6)
+
+#The overall scatterplot, shaded in grey
+titer_dcm_background_grey<-ggplot(data=rfp_first_round_data,aes(y=titer,x=dcm))+
+  geom_point(color="black",shape=16,alpha=0.1,size=5)+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  ylab("Titer (mg/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm_background_grey
+save_plot("rfp Dynamic range of titer and dcm grey.pdf",titer_dcm_background_grey,base_height=5,base_width=6)
+
+#Centerpoints plotted over the overall grey background points
+titer_dcm_background_centerpoints<-ggplot()+
+  geom_point(data=rfp_first_round_data,aes(y=titer,x=dcm),color="black",shape=16,alpha=0.1,size=5)+
+  geom_point(data=centerpoints,aes(y=titer,x=dcm,fill=as.factor(rep_cat),shape=as.factor(Replicate)),
+             size=5,alpha=0.7)+
+  scale_fill_manual(values=c(centerpoint_1_color,centerpoint_2_color),guide='none')+
+  scale_shape_manual(values=c(21,22,23,24),guide='none')+
+  coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  ylab("Titer (mg/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm_background_centerpoints
+save_plot("rfp Dynamic range of titer and dcm with centerpoints.pdf",titer_dcm_background_centerpoints,base_height=5,base_width=6)
+
+#Zoom-in of the above plot
+titer_dcm_background_centerpoints_zoomed<-ggplot(data=centerpoints)+
+  geom_point(data=rfp_first_round_data,aes(y=titer,x=dcm),color="black",shape=16,alpha=0.1,size=5)+
+  geom_point(data=centerpoints,aes(y=titer,x=dcm,fill=as.factor(rep_cat),shape=as.factor(Replicate)),
+             size=5,alpha=0.7)+
+  scale_fill_manual(values=c(centerpoint_1_color,centerpoint_2_color),name="Dates",labels=c("Oct./Nov. 2017", "Jan./Feb. 2018"))+
+  scale_shape_manual(values=c(21,22,23,24),name="Run \norder")+
+  guides(fill=guide_legend(override.aes = list(shape=21,colour=NA)))+
+  #coord_equal(ratio=1,xlim=c(0,16),ylim = c(0,16))+
+  coord_equal(ratio=1,xlim=c(8,11),ylim = c(3,7))+
+  ylab("Titer (mg/L)")+xlab("Dry cell mass (g/L)")
+titer_dcm_background_centerpoints_zoomed
+save_plot("rfp Dynamic range of titer and dcm with centerpoints zoomed.pdf", titer_dcm_background_centerpoints_zoomed, base_height=5,  base_width=8)
+
+#Plot of the centerpoints vs. time with date as factor
+centerpoint_plot_auto_scale<-ggplot(filter(centerpoints_metric, Category=="Centerpoint"), aes(x=as.factor(elapsed_days),y=response))+
+  geom_point(aes(fill=as.factor(rep_cat)),shape=21, alpha=0.7,size=point_size*0.7,color="black")+
+  facet_grid(metric~.,scales="free",labeller=labeller(metric=facet_labels_3),
+             switch="both")+
+ theme(strip.background = element_blank(), 
+        strip.placement = "outside", 
+        axis.title.y = element_blank(),
+        panel.spacing = unit(panel_spacing,'lines'),
+        axis.line = element_blank())+
+        #axis.text.x=element_text(angle=45, hjust=1))+
+  panel_border(colour="black",size=panel_line_width,linetype=1)+
+  scale_fill_manual(values=c(centerpoint_2_color),guide='none')+
+  scale_color_manual(values=c(centerpoint_2_color),guide='none')+
+  scale_shape_manual(values=c(21,22,23,24),name="Run \norder")+
+  xlab("Day")
+centerpoint_plot_auto_scale
+
+
+#Sideways density plots of the two centerpoint groups, and the e30 and e45 data
+centerpoint_density_plot_flipped<-ggplot(data=filter(centerpoints_metric, rep_cat<3), aes(x=response))+
+  geom_density(aes(group=rep_cat,fill=as.factor(rep_cat)),alpha=0.6,size=0.25)+
+  geom_rug(aes(color=as.factor(rep_cat)),size=0.1)+
+  facet_wrap(~metric,labeller=labeller(metric=facet_labels), scales="free",ncol=1)+
+  scale_fill_manual(values=c(centerpoint_2_color,centerpoint_1_color),guide='none')+
+  scale_color_manual(values=c(centerpoint_2_color,centerpoint_1_color),guide='none')+
+  # scale_fill_discrete(name="Centerpoints",
+  #                     labels=c("Group 1",
+  #                              "Group 2"))+
+  theme(panel.spacing = unit(panel_spacing,"lines"),
+         strip.background = element_blank(),
+         strip.text.x = element_blank(),
+         axis.text.x = element_blank(),
+         axis.text.y = element_blank(),
+         axis.ticks = element_blank(),
+         axis.line = element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y=element_blank(),
+        panel.grid = element_blank())+
+  coord_flip()+
+  xlab('')+ylab('')
+centerpoint_density_plot_flipped
+
+centerpoint_composite_plot<-plot_grid(centerpoint_plot_auto_scale, centerpoint_density_plot_flipped, ncol = 2, nrow = 1,
+          align="h", rel_widths = c(4,1), axis="tblr")
+centerpoint_composite_plot
+#save_plot("rfp centerpoint plots.pdf",centerpoint_composite_plot,base_height=2,base_width=5)
+
+centerpoints_metric%>%
+  group_by(metric,rep_cat)%>%
+  summarize(mean=mean(response), sd=sd(response))%>%
+  mutate(cv=sd/mean*100)
+
+
+#Bartlett test of homogeneity of variances
+bartlett.test(centerpoints$dcm,centerpoints$Exp_date)
+bartlett.test(centerpoints$titer,centerpoints$Exp_date)
+bartlett.test(centerpoints$yield,centerpoints$Exp_date)
+qchisq(0.95,6)
+#if Chi-squared > Bartlett's K-squared, we accept the null hypothesis that variances are homogeneous
+
+#Levene test for homogeneity of variances
+leveneTest(centerpoints$dcm,as.factor(centerpoints$Exp_date))
+leveneTest(centerpoints$titer,as.factor(centerpoints$Exp_date))
+leveneTest(centerpoints$yield,as.factor(centerpoints$Exp_date))
+
+#Fligner-Killeen test for homoskedasticity
+fligner.test(centerpoints$dcm,centerpoints$Exp_date)
+fligner.test(centerpoints$titer,centerpoints$Exp_date)
+fligner.test(centerpoints$yield,centerpoints$Exp_date)
+
+
+
+```
+
+RFP main effects scatter plot with density plots -- For supplementary information
+```{r main effects with density plots}
+#Create a factor scatter plot, where the normalized difference in titer is on one axis, DCM on the other, and the factor name is plotted at the (x,y) coordinate of the two. 
+
+titer_limits=c(-0.5,0.5)
+dcm_limits=c(-0.2, 0.25)
+
+density_titer<-ggplot(data=rfp_plotting,aes(x=Titer,fill=category,color=category))+
+  geom_density(alpha=point_alpha/2)+
+  geom_rug()+
+  scale_color_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  scale_fill_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  xlim(titer_limits)+ylim(0,13)+
+  coord_flip()+
+  clean_theme()+
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+density_titer
+
+density_dcm<-ggplot(data=rfp_plotting,aes(x=DCM,fill=category,color=category))+
+  geom_density(alpha=point_alpha/2)+
+  geom_rug()+
+  scale_color_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  scale_fill_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  xlim(dcm_limits)+ylim(0,11)+
+  clean_theme()+
+  theme(#axis.ticks=element_blank(), axis.text=element_blank(), axis.title= element_blank(), axis.line = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+density_dcm
+
+density_yield<-ggplot(data=rfp_plotting,aes(x=Yield,fill=category,color=category))+
+  geom_density(alpha=point_alpha/2)+
+  geom_vline(xintercept = 0, linetype="dashed", alpha=equality_alpha)+
+  geom_rug()+
+  scale_color_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  scale_fill_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  xlim(titer_limits)+
+  #clean_theme()+
+  xlab("Yield Relative Effect")+
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(), axis.title.y= element_blank(), axis.line.y = element_blank(),
+        plot.background = element_rect(color="grey40", size=0.5, linetype="solid"))
+density_yield
+
+yield_grob=ggplotGrob(density_yield)
+
+#The actual scatter plot
+main_effects_scatter_plot<-ggplot(data=rfp_plotting, aes(y=Titer,x=DCM))+
+  geom_hline(yintercept = 0, alpha=axes_alpha)+
+  geom_vline(xintercept = 0, alpha=axes_alpha)+
+  geom_abline(slope=1,intercept=0,linetype="dashed",alpha=equality_alpha)+
+  geom_point(aes(color=category,fill=category),shape=21,size=3,alpha=point_alpha)+  
+  geom_text_repel(aes(label=factor,color=category),size=4, box.padding = 0.1, point.padding = 0.5, max.iter=1e5, fontface="bold", direction = "both",seed=1)+
+  scale_color_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  scale_fill_manual(values=c(media_color,other_color,oxygen_color),guide="none")+
+  scale_y_continuous(breaks=seq(-1,1,0.25),limits=titer_limits)+
+  scale_x_continuous(breaks=seq(-1,1,0.1),limits=dcm_limits)+
+  ylab('Titer Relative Effect')+xlab('Dry Cell Mass Relative Effect')+
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))+
+  annotation_custom(grob = yield_grob, xmin=0.08, xmax=0.25, ymin=-0.54, ymax=-0.25)    #Add the yield density plot as an inset on the main scatter plot
+main_effects_scatter_plot
+#save_plot("Lycopene Main effects scatter plot.pdf",main_effects_scatter_plot,base_height=9,base_width=10)
+
+#Compile the density plots and scatter plots into a single figure
+scatter_density_composite_plot<-plot_grid(density_dcm, NULL, main_effects_scatter_plot, density_titer, ncol = 2, nrow = 2,
+          align="hv", rel_widths = c(4,1), rel_heights = c(1,4))
+scatter_density_composite_plot
+save_plot("RFP main effects scatter plot with density plots.pdf", scatter_density_composite_plot, ncol=2, nrow=2, base_height = 5, base_aspect_ratio = 1)
+
+
+# main_effects_unlabeled_scatter_plot<-ggplot(data=lycopene_plotting, aes(y=abs(Titer),x=abs(DCM)))+
+#   geom_abline(slope=1,intercept=0,linetype="dashed",alpha=equality_alpha)+
+#   geom_text(aes(x=1,y=0.95,label="Yield Relative Effect = 0"),angle=45,size=5,color="grey50")+
+#   geom_point(aes(color=category,fill=category,shape=main_effect),size=3,alpha=point_alpha)+  
+#   scale_shape_manual(values=c(22,21),guide='none')+
+#   scale_color_manual(values=c(oxygen_color,media_color,other_color),guide="none")+
+#   scale_fill_manual(values=c(oxygen_color,media_color,other_color),guide="none")+
+#   coord_equal()+
+#   scale_y_continuous(breaks=seq(0,1,0.25),limits=titer_limits)+
+#   scale_x_continuous(breaks=seq(0,1,0.25),limits=titer_limits)+
+#   ylab('Titer Relative Effect Magnitude')+xlab('Dry Cell Mass Relative Effect Magnitude')
+# main_effects_unlabeled_scatter_plot
+
+
+
+```
+
+

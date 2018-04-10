@@ -1,0 +1,389 @@
+---
+title: "Cell metrics experiment analysis notebook for comparing Lycopene and RFP performance metrics"
+output: html_notebook
+---
+
+Lycopene data
+```{r}
+#Set working directory
+dirnm<-"/Users/ahh1/Documents/My SugarSync/Cell Metrics/Experimental Data/R analysis files/R files for upload"
+setwd(dirnm)
+
+library(tidyverse)
+library(readxl)
+library(rmarkdown)
+library(cowplot)
+library(FrF2)
+library(nlme)
+library(lubridate)
+library(forcats)
+library(car)
+library(ggrepel)
+library(ggforce)
+library(ggpubr)
+library(gridExtra)
+library(reshape2)
+source("Lycopene_analysis.R")
+source("RFP_analysis.R")
+source("DCM_analysis.R")
+#source("Lycopene_background_correction.R")
+source("Main_effects_calculator.R")
+
+#=====================
+#READ IN DATA:
+#=====================
+#summary tab file is generated in "Lycopene_data_transformation.R"
+
+summary_tab_lyc<-read_csv("Lycopene experimental data table.csv")%>%
+  #mutate(Yeast_extract_source=as.factor(Yeast_extract_source))%>%
+  mutate(Well_bottom=as.numeric(fct_recode(Well_bottom,
+                               '1'="Round",
+                               '-1'="Pyramidal")))%>%
+  mutate(Well_cover=as.numeric(fct_recode(Well_cover,
+                               '-1'="Aeraseal",
+                               '1'="Foil")))%>%
+  mutate(Flask_baffles=as.numeric(fct_recode(Flask_baffles,
+                               '-1'="Unbaffled",
+                               '1'="Baffled")))%>%
+  mutate(Flask_cover=as.numeric(fct_recode(Flask_cover,
+                               '-1'="Foam",
+                               '1'="Aluminum")))%>%
+  mutate(fct_cat=Exp_number)%>%
+  mutate(fct_cat=fct_recode(fct_cat, "e26"="e31"))%>%
+  mutate(fct_cat=fct_relevel(fct_cat,"e26", after=1 ))%>%
+  mutate(fct_cat=fct_recode(fct_cat,
+                        "Media"="e27",
+                        "Oxygen"="e26",
+                        "Other"="e28"))%>%
+  ungroup()%>%
+  group_by(Exp_number,Exp_plate)%>%
+  mutate(cultures_per_plate=n())%>%
+  ungroup()%>%
+  group_by(Exp_number,Temperature)%>%
+  mutate(cultures_per_inc=n())%>%
+  ungroup()
+```
+
+
+
+Define key global variables for Lycopene:
+```{r}
+
+#=====================
+#CALIBRATION VALUES:
+#=====================
+
+#Dry cell calibration curve values. x-axis: OD700, y-axis: Dry cell mass per volume of culture (g/L)
+#Calibration values from cm-e42, averaging the runs in cm-e10 and cm-e41
+DCM_OD700_slope <- 1.343289
+DCM_OD700_intercept <- (-0.016317)
+
+dcm_calibration<-c(DCM_OD700_slope,DCM_OD700_intercept)
+
+
+#=======================
+#PLOTTING VARIABLES:
+#=======================
+#Light set
+other_color_light<-"#8da0cb"
+media_color_light<-"#fc8d62"
+oxygen_color_light<-"#66c2a5"
+combo_color_light<-"#636363"
+  
+#Dark set
+other_color<-"#7570b3"
+media_color<-"#d95f02"
+oxygen_color<-"#1b9e77"
+combo_color<-"#252525"
+
+#Line alphas
+axes_alpha=0.4
+equality_alpha=0.3
+circle_alpha=0.1
+background_alpha=0.15
+point_alpha=0.8
+
+facet_labels<-c(dcm="Dry cell mass (g/L)", titer="Titer (mg/L)", yield="Titer / DCM = Yield (mg/g)" )
+facet_labels_2<-c(DCM="Dry cell mass", Titer="Titer",Yield="Yield (Dry cell mass / Titer)")
+violin_labels<-c(DCM="Dry cell mass", Titer="Titer",Yield="Dry cell mass / Titer = Yield")
+shaker_facet_labels<-c('230'="Shake speed = 230 rpm", '460'="Shake speed = 460 rpm")
+mag_sulfate_labels<-c('0'='0 g/L Magnesium sulfate', '0.24'='0.24 g/L Magnesium sulfate')
+flask_baffle_labels<-c('1'="Baffled", '2'="Unbaffled")
+```
+
+
+Read in RFP data:
+```{r, echo=F, warning=F, message=F}
+#=====================
+#READ IN RFP DATA:
+#=====================
+
+OD_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 1, col_names = T)
+rfp_raw<-read_excel("Supplementary Data File S4.xlsx",sheet = 3, col_names = T) 
+key<-read_excel("Supplementary Data File S4.xlsx", sheet = 5, col_names = T, na="NA")
+```
+
+Analyze RFP data:
+```{r, echo=F, warning=F, message=F}
+#=====================
+#DATA PROCESSING STEPS
+#=====================
+
+#Convert the fluorescence to fluorecsence per mL (titer). 
+rfp_analyzed<-RFP_analysis(rfp_raw,key)
+
+#Do the same for the OD values.
+od_analyzed<-DCM_analysis(OD_raw,key,dcm_calibration)
+
+
+#Merge the calculated lycopene concentration with dry cell mass.
+#Calculate yield, the mass of lycopene produced per biomass. Result has units of, mg/g. (titer in mg/L, dcm in g/L).
+data_merge<-merge(rfp_analyzed,select(od_analyzed,Well_id,dcm),by="Well_id")%>%
+  mutate(yield = titer/dcm)%>%
+  filter(Category!="Blank")
+
+
+#============================================
+#Create a summary table, summarizing key metrics by well and by type.
+#============================================
+
+#Summary_tab is the full experimental design table. Columns are factor levels and responses, rows are runs
+#Recode 
+summary_tab_rfp<-data_merge%>%
+  group_by(Well_id)%>%
+  summarize_at(c('titer','dcm','yield'), mean, na.rm=T)%>%
+  merge(key, by="Well_id")%>%
+  arrange(desc(Category),Exp_number,Run_number)%>%
+  mutate(Yeast_extract_source=as.factor(Yeast_extract_source))%>%
+  mutate(MTP_bottom=as.numeric(fct_recode(MTP_bottom,
+                               '1'="Round",
+                               '-1'="Pyramidal")))%>%
+  mutate(MTP_cover=as.numeric(fct_recode(MTP_cover,
+                               '-1'="Aeraseal",
+                               '1'="Foil")))%>%
+  rename(Well_bottom=MTP_bottom, 
+         Well_cover=MTP_cover, 
+         Well_fill_volume=MTP_fill_volume, 
+         Well_volume=MTP_volume,
+         Shake_speed=MTP_shake_speed)
+  #write_excel_csv("Cell metrics experiments table e26 e27 e28 e30.csv")
+
+```
+
+
+
+Calculate the main effects and interaction effects for each factor in the experiments listed in exp_factors_list
+```{r}
+
+lycopene_first_round_factors_list = list(
+  "e26"=c("Well_bottom","Well_cover","Well_volume","Well_fill_volume","Shake_speed"),
+  "e27"=c("Buffer_capacity","Glycerol","pH","Osmolality","Tryptone","Yeast_extract","Yeast_extract_source","Magnesium_sulfate"),
+  "e28"=c("Time","Temperature","Antibiotic_conc","Inoculum_amount","Inoculum_age"),
+  "e31"=c('Flask_baffles','Flask_cover','Flask_volume','Flask_fill_volume'))
+
+lycopene_second_round_factors_list=list("e30"=c('Time','Temperature','Yeast_extract','Yeast_extract_source','Glycerol','Magnesium_sulfate','pH','Well_volume','Well_fill_volume'))
+
+rfp_first_round_factors_list = list(
+  "e34"=c("Well_bottom","Well_cover","Well_volume","Well_fill_volume","Shake_speed"),
+  "e29"=c("Buffer_capacity","Glycerol","pH","Osmolality","Tryptone","Yeast_extract","Yeast_extract_source","Magnesium_sulfate"),
+  "e33"=c("Time","Temperature","Antibiotic_conc","Inoculum_amount","Inoculum_age"))
+
+rfp_second_round_factors_list=list("e35"=c('Time','Temperature','Yeast_extract','Yeast_extract_source','Glycerol','Magnesium_sulfate','pH','Well_volume','Well_fill_volume'))
+
+metrics_list = list("dcm","titer","yield")
+
+lycopene_effects<-Main_effects_calculator(summary_tab_lyc, lycopene_first_round_factors_list, metrics_list)%>%
+  mutate(product="lycopene",
+    category = fct_recode(Exp_number,
+                                 "Container"="e26",
+                                 "Media"="e27",
+                                 "Other"="e28",
+                                 "Container"="e31"))
+lycopene_second_round_effects<-Main_effects_calculator(summary_tab_lyc, lycopene_second_round_factors_list, metrics_list)
+
+#Create one-letter codes for each factor
+lycopene_effects<-lycopene_effects%>%
+  mutate(factor_one_letter=fct_recode(factor_one,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))%>%
+  mutate(factor_two_letter=fct_recode(factor_two,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))
+
+ for (j in 1:dim(lycopene_effects)[1]){
+    if (is.na(lycopene_effects$factor_two_letter[j])){
+      lycopene_effects$factor_letter[j]<-as.character(lycopene_effects$factor_one_letter[j])
+    } else {
+      lycopene_effects$factor_letter[j]<-paste(lycopene_effects$factor_one_letter[j], lycopene_effects$factor_two_letter[j], sep=":")
+    }
+  }
+
+
+rfp_effects<-Main_effects_calculator(summary_tab_rfp, rfp_first_round_factors_list, metrics_list)%>%
+  mutate(product="rfp",
+    category = fct_recode(Exp_number,
+                                 "Container"="e34",
+                                 "Media"="e29",
+                                 "Other"="e33"))
+
+rfp_second_round_effects<-Main_effects_calculator(summary_tab_rfp, rfp_second_round_factors_list, metrics_list)
+
+
+#Create one-letter codes for each factor
+rfp_effects<-rfp_effects%>%
+  mutate(factor_one_letter=fct_recode(factor_one,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))%>%
+  mutate(factor_two_letter=fct_recode(factor_two,
+                                      "A"="Antibiotic concentration",
+                                      "B"="Buffer capacity",
+                                      "C"="Flask baffles",
+                                      "D"="Flask cover",
+                                      "E"="Flask fill volume",
+                                      "F"="Flask volume",
+                                      "G"="Glycerol",
+                                      "H"="Inoculum age",
+                                      "J"="Inoculum amount",
+                                      "K"="Magnesium sulfate",
+                                      "L"="Well bottom",
+                                      "M"="Well cover",
+                                      "N"="Well fill volume",
+                                      "P"="Shake speed",
+                                      "Q"="Well volume",
+                                      "R"="Osmolality",
+                                      "S"="pH",
+                                      "T"="Temperature",
+                                      "U"="Time",
+                                      "V"="Tryptone",
+                                      "W"="Yeast extract",
+                                      "X"="Yeast extract source"))
+
+ for (j in 1:dim(rfp_effects)[1]){
+    if (is.na(rfp_effects$factor_two_letter[j])){
+      rfp_effects$factor_letter[j]<-as.character(rfp_effects$factor_one_letter[j])
+    } else {
+      rfp_effects$factor_letter[j]<-paste(rfp_effects$factor_one_letter[j], rfp_effects$factor_two_letter[j], sep=":")
+    }
+  }
+
+
+
+```
+
+
+Comparing the main effects from RFP and lycopene
+``````{r, echo=F, warning=F, message=F}
+#-----------
+#Compare RFP and Lycopene effects
+#-----------
+
+all_effects<-full_join(lycopene_effects,rfp_effects)%>%
+  filter(Exp_number!="e31")%>%
+  select(metric, Exp_number, factor, factor_letter, category, product, relative_effect, main_effect)%>%
+  spread(key=metric,value=relative_effect)%>%
+  filter(main_effect==T | factor_letter %in% c("N:P", "Q:P", "Q:N", "X:K", "U:T"))
+
+all_effects_melt<-all_effects%>%
+  select(-Exp_number)%>%
+  gather('Titer','DCM','Yield',key="metric",value="response")%>%
+  spread(key=product, value=response)%>%
+  mutate(residual=abs(rfp)-abs(lycopene))
+
+all_effects_melt$category_facet = factor(all_effects_melt$category, levels=c("Media","Container","Other"))
+
+
+main_effects_letter_plot<-ggplot(data=all_effects_melt, aes(y=(abs(rfp)),x=abs(lycopene)))+
+  geom_abline(intercept = 0, slope=1, alpha=equality_alpha, linetype='dashed')+
+  geom_label(aes(label=factor_letter,fill=category), color="black", size=4, alpha=0.9)+
+  #scale_color_manual(values=c(oxygen_color,media_color,other_color),guide="none")+
+  scale_fill_manual(values=c(oxygen_color_light,media_color_light,other_color_light),guide="none")+
+  facet_grid(category_facet~metric, labeller = labeller(metric=facet_labels_2))+
+  panel_border(colour="black",size=1,linetype=1)+
+  coord_equal()+
+  xlim(0,1.1)+ylim(0,1.1)+
+  theme(panel.spacing = unit(0.5,"lines"), strip.background = element_blank(), strip.text = element_text(size=14))+
+  xlab('Lycopene Relative Effect Magnitude')+
+  ylab('RFP Relative Effect Magnitude')
+main_effects_letter_plot
+#save_plot("Lycopene-RFP main effects comparison scatter plot.pdf",main_effects_letter_plot,base_height=10,base_width=10)
+
+
+main_effects_residual_plot<-ggplot(data=all_effects_melt, aes(y=((residual)),x=abs(lycopene)))+
+  geom_abline(intercept = 0, slope=0, alpha=equality_alpha, linetype='dashed')+
+  geom_label(aes(label=factor_letter,fill=category), color="black", size=4, alpha=0.6)+
+  #scale_color_manual(values=c(oxygen_color,media_color,other_color),guide="none")+
+  scale_fill_manual(values=c(media_color_light,other_color_light,oxygen_color_light),guide="none")+
+  facet_grid(~metric, labeller = labeller(metric=facet_labels_2))+
+  panel_border(colour="black",size=1,linetype=1)+
+  coord_equal()+
+  #xlim(0,1.1)+ylim(0,1.1)+
+  theme(panel.spacing = unit(0.5,"lines"), strip.background = element_blank(), strip.text = element_text(size=14))+
+  xlab('Lycopene Relative Effect Magnitude')+
+  ylab('(RFP - Lycopene) Relative Effect Magnitude')
+main_effects_residual_plot
+#save_plot("Lycopene-RFP main effects comparison residual scatter plot.pdf",main_effects_residual_plot,base_height=8,base_width=14)
+
+
+
+```
+
